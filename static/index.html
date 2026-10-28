@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>People Tracker</title>
+<style>
+  :root {
+    --bg: #f4f4f2;
+    --surface: #ffffff;
+    --text: #1d1d1b;
+    --muted: #6b6b66;
+    --border: #deddd8;
+    --live: #1f9d55;
+    --warn: #c27c0e;
+    --idle: #8a8a85;
+    --stage: #e6e5e1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121211;
+      --surface: #1b1b1a;
+      --text: #ecebe6;
+      --muted: #9a9993;
+      --border: #2e2e2c;
+      --live: #3ccf7c;
+      --warn: #e8a33a;
+      --idle: #77766f;
+      --stage: #0a0a0a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 24px;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; }
+  .status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); }
+  .status[data-state="live"] .dot { background: var(--live); }
+  .status[data-state="connecting"] .dot,
+  .status[data-state="reconnecting"] .dot,
+  .status[data-state="offline"] .dot { background: var(--warn); }
+  .stats { display: flex; gap: 20px; font-variant-numeric: tabular-nums; }
+  .stat b { font-weight: 600; }
+  .stat span { color: var(--muted); margin-left: 4px; }
+  label.conf { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); margin-left: auto; }
+  label.conf output { color: var(--text); font-variant-numeric: tabular-nums; min-width: 3ch; }
+  main {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+  }
+  .stage {
+    position: relative;
+    background: var(--stage);
+    border-radius: 6px;
+    overflow: hidden;
+    max-width: 100%;
+    max-height: 100%;
+    aspect-ratio: 16 / 9;
+    width: 100%;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  .stage.stale canvas { filter: grayscale(1) brightness(0.6); }
+  .banner {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    font-size: 15px;
+    text-shadow: 0 1px 3px rgba(0,0,0,.6);
+    pointer-events: none;
+  }
+  .banner[hidden] { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>People Tracker</h1>
+  <span class="status" id="status" data-state="offline"><span class="dot"></span><span id="statusText">Connecting…</span></span>
+  <div class="stats">
+    <div class="stat"><b id="count">–</b><span>people</span></div>
+    <div class="stat"><b id="fps">–</b><span>fps</span></div>
+    <div class="stat"><b id="lag">–</b><span>ms lag</span></div>
+  </div>
+  <label class="conf">Min confidence
+    <input type="range" id="conf" min="0.25" max="0.9" step="0.05" value="0.4">
+    <output id="confOut">0.40</output>
+  </label>
+</header>
+<main>
+  <div class="stage stale" id="stage">
+    <canvas id="canvas"></canvas>
+    <div class="banner" id="banner">Connecting…</div>
+  </div>
+</main>
+<script>
+const TRAIL_MS = 2000;
+const STATUS_TEXT = {
+  idle: "Idle",
+  connecting: "Connecting to camera…",
+  reconnecting: "Camera lost, reconnecting…",
+  live: "Live",
+  offline: "Server unreachable, retrying…",
+};
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const stage = document.getElementById("stage");
+const banner = document.getElementById("banner");
+const statusEl = document.getElementById("status");
+const statusText = document.getElementById("statusText");
+const countEl = document.getElementById("count");
+const fpsEl = document.getElementById("fps");
+const lagEl = document.getElementById("lag");
+const confInput = document.getElementById("conf");
+const confOut = document.getElementById("confOut");
+
+let minConf = Number(confInput.value);
+try {
+  const saved = localStorage.getItem("minConf");
+  if (saved) { minConf = Number(saved); confInput.value = saved; }
+} catch {}
+confOut.textContent = minConf.toFixed(2);
+confInput.addEventListener("input", () => {
+  minConf = Number(confInput.value);
+  confOut.textContent = minConf.toFixed(2);
+  try { localStorage.setItem("minConf", confInput.value); } catch {}
+  if (lastFrame) draw(lastFrame);
+});
+
+const trails = new Map(); // track id -> [{x, y, t}]
+let lastFrame = null;     // {bitmap, people}
+let pending = null;       // newest decoded frame waiting for the next animation frame
+
+const colorFor = id => `hsl(${(id * 137.508) % 360} 85% 55%)`;
+
+function setStatus(state, detail) {
+  statusEl.dataset.state = state;
+  statusText.textContent = STATUS_TEXT[state] ?? state;
+  const live = state === "live";
+  stage.classList.toggle("stale", !live);
+  banner.hidden = live;
+  banner.textContent = (STATUS_TEXT[state] ?? state) + (detail ? ` (${detail})` : "");
+}
+
+function updateTrails(people, now) {
+  for (const p of people) {
+    const [x1, , x2, y2] = p.box;
+    let trail = trails.get(p.id);
+    if (!trail) trails.set(p.id, trail = []);
+    trail.push({ x: (x1 + x2) / 2, y: y2, t: now });
+  }
+  for (const [id, trail] of trails) {
+    while (trail.length && now - trail[0].t > TRAIL_MS) trail.shift();
+    if (!trail.length) trails.delete(id);
+  }
+}
+
+function draw({ bitmap, people }) {
+  if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    stage.style.aspectRatio = `${bitmap.width} / ${bitmap.height}`;
+  }
+  const W = canvas.width, H = canvas.height, now = performance.now();
+  ctx.drawImage(bitmap, 0, 0);
+
+  const visible = people.filter(p => p.conf >= minConf);
+  const visibleIds = new Set(visible.map(p => p.id));
+  countEl.textContent = visible.length;
+
+  // Trails: feet position over the last couple of seconds, fading with age.
+  ctx.lineWidth = Math.max(2, W / 400);
+  ctx.lineCap = "round";
+  for (const [id, trail] of trails) {
+    if (!visibleIds.has(id) || trail.length < 2) continue;
+    ctx.strokeStyle = colorFor(id);
+    for (let i = 1; i < trail.length; i++) {
+      ctx.globalAlpha = Math.max(0, 1 - (now - trail[i].t) / TRAIL_MS);
+      ctx.beginPath();
+      ctx.moveTo(trail[i - 1].x * W, trail[i - 1].y * H);
+      ctx.lineTo(trail[i].x * W, trail[i].y * H);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  const fontPx = Math.max(12, Math.round(W / 80));
+  ctx.font = `600 ${fontPx}px system-ui, sans-serif`;
+  ctx.textBaseline = "top";
+  for (const p of visible) {
+    const [x1, y1, x2, y2] = p.box;
+    const x = x1 * W, y = y1 * H, w = (x2 - x1) * W, h = (y2 - y1) * H;
+    const color = colorFor(p.id);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(2, W / 500);
+    ctx.strokeRect(x, y, w, h);
+
+    const label = `#${p.id} ${p.conf.toFixed(2)}`;
+    const pad = fontPx * 0.3;
+    const tw = ctx.measureText(label).width + pad * 2;
+    const th = fontPx + pad * 2;
+    const ly = y - th >= 0 ? y - th : y;
+    ctx.fillStyle = color;
+    ctx.fillRect(x, ly, tw, th);
+    ctx.fillStyle = "#000";
+    ctx.fillText(label, x + pad, ly + pad);
+  }
+}
+
+function render() {
+  if (pending) {
+    lastFrame?.bitmap.close();
+    lastFrame = pending;
+    pending = null;
+    draw(lastFrame);
+  }
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+async function onFrame(buf) {
+  const view = new DataView(buf);
+  const metaLen = view.getUint32(0, true);
+  const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, metaLen)));
+  const bitmap = await createImageBitmap(new Blob([new Uint8Array(buf, 4 + metaLen)], { type: "image/jpeg" }));
+  updateTrails(meta.people, performance.now());
+  fpsEl.textContent = meta.fps.toFixed(1);
+  lagEl.textContent = meta.lag_ms;
+  pending?.bitmap.close();
+  pending = { bitmap, people: meta.people };
+}
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = e => {
+    if (typeof e.data === "string") {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "status") setStatus(msg.state, msg.detail);
+    } else {
+      onFrame(e.data);
+    }
+  };
+  ws.onclose = () => {
+    setStatus("offline");
+    setTimeout(connect, 1500);
+  };
+}
+connect();
+</script>
+</body>
+</html>

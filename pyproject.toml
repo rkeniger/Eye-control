@@ -1,0 +1,13 @@
+[project]
+name = "eye-control"
+version = "0.1.0"
+description = "Live people tracking on an RTSP stream, viewed in the browser"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "ultralytics>=8.3",
+    "lap>=0.5.12",
+    "opencv-python>=4.10",
+    "python-dotenv>=1.0",
+]

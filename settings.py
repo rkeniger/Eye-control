@@ -1,0 +1,23 @@
+import os
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+@dataclass(frozen=True)
+class Settings:
+    rtsp_url: str = os.getenv("RTSP_URL", "rtsp://scrypted.local:43705/27de8bbd9f1f48a5")
+    model: str = os.getenv("MODEL", "yolo11s.pt")
+    imgsz: int = int(os.getenv("IMGSZ", "1280"))
+    conf: float = float(os.getenv("CONF", "0.25"))
+    preview_width: int = int(os.getenv("PREVIEW_WIDTH", "1280"))
+    jpeg_quality: int = int(os.getenv("JPEG_QUALITY", "75"))
+    max_fps: float = float(os.getenv("MAX_FPS", "15"))
+    idle_stop_seconds: float = float(os.getenv("IDLE_STOP_SECONDS", "10"))
+    host: str = os.getenv("HOST", "0.0.0.0")
+    port: int = int(os.getenv("PORT", "8000"))
+
+
+settings = Settings()
