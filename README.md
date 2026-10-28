@@ -10,7 +10,7 @@ uv run main.py
 
 Open http://localhost:8000 (or `http://<this-mac>:8000` from another device on the LAN). There is no authentication.
 
-The pipeline only runs while a page is open. It starts on the first viewer and stops `IDLE_STOP_SECONDS` after the last one leaves. If the stream drops, it reconnects with backoff (1 → 10 s) and the page shows a banner.
+Detection runs continuously while the server is up. Preview frames are only encoded and sent while a page is open. If the stream drops, it reconnects with backoff (1 → 10 s) and the page shows a banner.
 
 ## Configuration
 

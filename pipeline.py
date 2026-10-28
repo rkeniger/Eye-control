@@ -2,9 +2,10 @@
 
 Threads:
   reader  pulls frames from RTSP, keeping only the newest one (no backlog = no lag build-up)
-  worker  runs detection/tracking on the newest frame, encodes a preview, publishes it
+  worker  runs detection/tracking on the newest frame, hands people to `on_people`,
+          and (only while viewers are subscribed) encodes and publishes a preview
 
-The pipeline only runs while at least one viewer is subscribed (plus a short grace period).
+The pipeline runs continuously from start() so downstream consumers (the eye) always get detections.
 """
 
 import asyncio
@@ -14,6 +15,7 @@ import os
 import struct
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 # Must be set before OpenCV opens any FFmpeg capture.
@@ -59,15 +61,17 @@ class Session:
 
 
 class Pipeline:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, on_people: Callable[[list[dict], float], dict] | None = None):
+        """`on_people(people, captured_at)` is called from the worker thread for every processed frame;
+        the dict it returns is merged into the frame metadata sent to viewers."""
         self.settings = settings
+        self.on_people = on_people
         self.device = "mps" if torch.backends.mps.is_available() else "cpu"
         self._model: YOLO | None = None
         self._model_lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._subscribers: set[asyncio.Queue] = set()
         self._session: Session | None = None
-        self._stop_timer: asyncio.TimerHandle | None = None
         self._status = {"type": "status", "state": "idle"}
 
     # ---- model -------------------------------------------------------------
@@ -84,33 +88,11 @@ class Pipeline:
                 self._model = model
         return self._model
 
-    # ---- subscription / lifecycle (event loop thread) ----------------------
+    # ---- lifecycle / subscription (event loop thread) ----------------------
 
-    def subscribe(self) -> asyncio.Queue:
+    def start(self):
+        """Start ingest + tracking. Call from the event loop."""
         self._loop = asyncio.get_running_loop()
-        if self._stop_timer:
-            self._stop_timer.cancel()
-            self._stop_timer = None
-        if self._session is None:
-            self._start()
-        queue: asyncio.Queue = asyncio.Queue(maxsize=2)
-        queue.put_nowait(json.dumps(self._status))
-        self._subscribers.add(queue)
-        return queue
-
-    def unsubscribe(self, queue: asyncio.Queue):
-        self._subscribers.discard(queue)
-        if not self._subscribers and self._session and not self._stop_timer:
-            self._stop_timer = self._loop.call_later(
-                self.settings.idle_stop_seconds, self._stop_if_idle
-            )
-
-    def shutdown(self):
-        if self._session:
-            self._session.stop.set()
-            self._session = None
-
-    def _start(self):
         log.info("Starting pipeline")
         session = Session()
         self._session = session
@@ -118,13 +100,19 @@ class Pipeline:
         threading.Thread(target=self._reader, args=(session,), daemon=True).start()
         threading.Thread(target=self._worker, args=(session,), daemon=True).start()
 
-    def _stop_if_idle(self):
-        self._stop_timer = None
-        if not self._subscribers and self._session:
-            log.info("No viewers for %ss, stopping pipeline", self.settings.idle_stop_seconds)
+    def shutdown(self):
+        if self._session:
             self._session.stop.set()
             self._session = None
-            self._status = {"type": "status", "state": "idle"}
+
+    def subscribe(self) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+        queue.put_nowait(json.dumps(self._status))
+        self._subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue):
+        self._subscribers.discard(queue)
 
     # ---- publishing (any thread) -------------------------------------------
 
@@ -212,14 +200,16 @@ class Pipeline:
                         {"id": track_id, "conf": round(conf, 3), "box": [round(v, 4) for v in xyxyn]}
                     )
 
-            h, w = frame.shape[:2]
-            if w > s.preview_width:
-                frame = cv2.resize(
-                    frame, (s.preview_width, round(h * s.preview_width / w)), interpolation=cv2.INTER_AREA
-                )
-            ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, s.jpeg_quality])
-            if not ok:
-                continue
+            extra = {}
+            if self.on_people:
+                try:
+                    extra = self.on_people(people, captured_at) or {}
+                except Exception:
+                    log.exception("on_people callback failed")
+
+            if stream_gen != live_gen:
+                live_gen = stream_gen
+                self._set_status(session, "live")
 
             now = time.time()
             if last_done is not None:
@@ -227,21 +217,32 @@ class Pipeline:
                 fps = 0.9 * fps + 0.1 * instant if fps else instant
             last_done = now
 
-            if stream_gen != live_gen:
-                live_gen = stream_gen
-                self._set_status(session, "live")
-
-            meta = json.dumps(
-                {
-                    "type": "frame",
-                    "people": people,
-                    "fps": round(fps, 1),
-                    "lag_ms": round((now - captured_at) * 1000),
-                }
-            ).encode()
-            # Binary message: [uint32 LE meta length][meta JSON][JPEG bytes]
-            self._publish(struct.pack("<I", len(meta)) + meta + jpeg.tobytes())
+            if self._subscribers:
+                self._publish_frame(frame, people, extra, fps, captured_at)
 
             if s.max_fps > 0:
                 session.stop.wait(max(0.0, 1.0 / s.max_fps - (time.time() - started)))
         log.info("Worker stopped")
+
+    def _publish_frame(self, frame, people: list[dict], extra: dict, fps: float, captured_at: float):
+        s = self.settings
+        h, w = frame.shape[:2]
+        if w > s.preview_width:
+            frame = cv2.resize(
+                frame, (s.preview_width, round(h * s.preview_width / w)), interpolation=cv2.INTER_AREA
+            )
+        ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, s.jpeg_quality])
+        if not ok:
+            return
+
+        meta = json.dumps(
+            {
+                "type": "frame",
+                "people": people,
+                "fps": round(fps, 1),
+                "lag_ms": round((time.time() - captured_at) * 1000),
+                **extra,
+            }
+        ).encode()
+        # Binary message: [uint32 LE meta length][meta JSON][JPEG bytes]
+        self._publish(struct.pack("<I", len(meta)) + meta + jpeg.tobytes())

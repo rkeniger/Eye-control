@@ -17,8 +17,8 @@ pipeline = Pipeline(settings)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load the model up front so the first viewer doesn't wait for it.
     await asyncio.to_thread(pipeline.load_model)
+    pipeline.start()
     yield
     pipeline.shutdown()
 

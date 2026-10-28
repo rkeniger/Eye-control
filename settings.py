@@ -15,7 +15,6 @@ class Settings:
     preview_width: int = int(os.getenv("PREVIEW_WIDTH", "1280"))
     jpeg_quality: int = int(os.getenv("JPEG_QUALITY", "75"))
     max_fps: float = float(os.getenv("MAX_FPS", "15"))
-    idle_stop_seconds: float = float(os.getenv("IDLE_STOP_SECONDS", "10"))
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
 
