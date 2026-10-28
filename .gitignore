@@ -4,3 +4,5 @@ __pycache__/
 *.mlpackage
 .env
 runs/
+.pio/
+.vscode/

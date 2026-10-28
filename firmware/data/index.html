@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eyeball Control</title>
+<style>
+  :root {
+    --bg: #f4f4f2; --surface: #fff; --text: #1d1d1b; --muted: #6b6b66; --border: #deddd8;
+    --accent: #2563eb; --accent-text: #fff; --live: #1f9d55; --warn: #c27c0e; --idle: #8a8a85; --danger: #c53030;
+    --pad: #ecebe7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121211; --surface: #1b1b1a; --text: #ecebe6; --muted: #9a9993; --border: #2e2e2c;
+      --accent: #4f8cff; --accent-text: #0b0b0b; --live: #3ccf7c; --warn: #e8a33a; --idle: #77766f; --danger: #f56565;
+      --pad: #232322;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  h1 { font-size: 16px; margin: 0; }
+  h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); }
+  .pill.ok .dot { background: var(--live); }
+  .pill.warn .dot { background: var(--warn); }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; font-variant-numeric: tabular-nums; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  .pad { position: relative; width: 100%; aspect-ratio: 1; background: var(--pad); border-radius: 8px; touch-action: none; cursor: crosshair; }
+  .pad::before, .pad::after { content: ""; position: absolute; background: var(--border); }
+  .pad::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .pad::after { top: 50%; left: 0; right: 0; height: 1px; }
+  .pad .knob { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--surface); z-index: 1; }
+  .row { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  .row label { min-width: 52px; color: var(--muted); }
+  input[type=range] { flex: 1; min-width: 120px; }
+  output { min-width: 5ch; text-align: right; font-variant-numeric: tabular-nums; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--danger); }
+  button[aria-pressed=true] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .cal { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+  .cal:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+  .cal h3 { font-size: 14px; margin: 0; }
+  .vals { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  #msg { min-height: 1.4em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Eyeball</h1>
+  <span class="pill" id="conn"><span class="dot"></span><span id="connText">Connecting…</span></span>
+</header>
+<main>
+  <section>
+    <h2>Status</h2>
+    <dl>
+      <dt>Mode</dt><dd id="sMode">–</dd>
+      <dt>State</dt><dd id="sState">–</dd>
+      <dt>Tracker</dt><dd id="sTracker">–</dd>
+      <dt>Yaw / pitch</dt><dd id="sAngles">–</dd>
+      <dt>Lid</dt><dd id="sLid">–</dd>
+      <dt>Wi-Fi</dt><dd id="sWifi">–</dd>
+      <dt>Uptime</dt><dd id="sUptime">–</dd>
+    </dl>
+    <div class="row">
+      <button id="auto">Auto</button>
+      <button id="manual">Manual</button>
+      <button id="blink">Blink</button>
+    </div>
+    <p class="note" id="manualNote"></p>
+  </section>
+
+  <section>
+    <h2>Look</h2>
+    <div class="pad" id="pad"><div class="knob" id="knob"></div></div>
+    <div class="row">
+      <label for="lid">Lid</label>
+      <input type="range" id="lid" min="0" max="1" step="0.01" value="1">
+      <output id="lidOut">1.00</output>
+    </div>
+    <p class="note">Dragging or moving the lid switches to manual. It returns to auto after 60 s without input.</p>
+  </section>
+
+  <section>
+    <h2>Calibration</h2>
+    <div id="calServos"></div>
+    <div class="row">
+      <button class="primary" id="saveCal">Save calibration</button>
+      <button id="reloadCal">Revert</button>
+    </div>
+    <p class="note" id="msg"></p>
+    <p class="note">Move each servo with its slider until it is just short of the printed hard stop, then set that limit. Raw moves ignore saved limits, so go slowly.</p>
+  </section>
+
+  <section>
+    <h2>Network</h2>
+    <p class="note">Forget the saved Wi-Fi and restart into the <b>Eyeball-Setup</b> access point.</p>
+    <div class="row"><button class="danger" id="wifiReset">Reset Wi-Fi</button></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let status = null;
+let cal = null;
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+// Send at most one request at a time, always with the newest value.
+function throttled(send) {
+  let pending = null, busy = false;
+  return async value => {
+    pending = value;
+    if (busy) return;
+    busy = true;
+    while (pending !== null) {
+      const v = pending;
+      pending = null;
+      try { await send(v); } catch (e) { $("msg").textContent = e.message; }
+    }
+    busy = false;
+  };
+}
+const sendManual = throttled(v => api("/api/manual", v));
+
+// ---- status ---------------------------------------------------------------
+
+function renderStatus(s) {
+  status = s;
+  $("sMode").textContent = s.mode;
+  $("sState").textContent = s.state + (s.attached ? "" : " (servos resting)");
+  $("sTracker").textContent = s.trackerActive ? "sending" : "not connected";
+  $("sAngles").textContent = `${s.yaw.toFixed(1)}° / ${s.pitch.toFixed(1)}°`;
+  $("sLid").textContent = `${Math.round(s.lid * 100)}% open`;
+  $("sWifi").textContent = `${s.ip} · ${s.rssi} dBm`;
+  $("sUptime").textContent = formatUptime(s.uptimeMs);
+  $("auto").setAttribute("aria-pressed", s.mode === "auto");
+  $("manual").setAttribute("aria-pressed", s.mode === "manual");
+  $("manualNote").textContent = s.mode === "manual" ? `Back to auto in ${Math.ceil(s.manualRemainingMs / 1000)} s` : "";
+  if (!dragging) placeKnob(s.yaw, s.pitch);
+}
+
+function formatUptime(ms) {
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+  return h ? `${h} h ${m} min` : `${m} min ${s % 60} s`;
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { $("conn").className = "pill ok"; $("connText").textContent = "Connected"; };
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "status") renderStatus(msg);
+  };
+  ws.onclose = () => {
+    $("conn").className = "pill warn";
+    $("connText").textContent = "Disconnected, retrying…";
+    setTimeout(connect, 1500);
+  };
+}
+
+// ---- gaze pad ---------------------------------------------------------------
+
+const pad = $("pad"), knob = $("knob");
+let dragging = false;
+
+function limits() {
+  return status?.limits ?? { yaw: [-30, 30], pitch: [-25, 25] };
+}
+
+function placeKnob(yaw, pitch) {
+  const { yaw: [y0, y1], pitch: [p0, p1] } = limits();
+  knob.style.left = `${((yaw - y0) / (y1 - y0 || 1)) * 100}%`;
+  knob.style.top = `${(1 - (pitch - p0) / (p1 - p0 || 1)) * 100}%`;
+}
+
+function padToAngles(e) {
+  const r = pad.getBoundingClientRect();
+  const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  const fy = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+  const { yaw: [y0, y1], pitch: [p0, p1] } = limits();
+  return { yaw: +(y0 + fx * (y1 - y0)).toFixed(1), pitch: +(p1 - fy * (p1 - p0)).toFixed(1) };
+}
+
+function onPad(e) {
+  const a = padToAngles(e);
+  placeKnob(a.yaw, a.pitch);
+  sendManual(a);
+}
+pad.addEventListener("pointerdown", e => { dragging = true; pad.setPointerCapture(e.pointerId); onPad(e); });
+pad.addEventListener("pointermove", e => { if (dragging) onPad(e); });
+pad.addEventListener("pointerup", () => { dragging = false; });
+pad.addEventListener("pointercancel", () => { dragging = false; });
+
+$("lid").addEventListener("input", e => {
+  $("lidOut").textContent = Number(e.target.value).toFixed(2);
+  sendManual({ lid: Number(e.target.value) });
+});
+$("auto").onclick = () => api("/api/mode", { mode: "auto" }).then(renderStatus);
+$("manual").onclick = () => api("/api/mode", { mode: "manual" }).then(renderStatus);
+$("blink").onclick = () => api("/api/blink", {}).then(renderStatus);
+
+// ---- calibration -------------------------------------------------------------
+
+const SERVOS = [
+  { key: "yaw", title: "Yaw (left/right)", marks: [["minUs", "Set min"], ["centerUs", "Set centre"], ["maxUs", "Set max"]], invert: true },
+  { key: "pitch", title: "Pitch (up/down)", marks: [["minUs", "Set min"], ["centerUs", "Set centre"], ["maxUs", "Set max"]], invert: true },
+  { key: "lid", title: "Eyelid", marks: [["closedUs", "Set closed"], ["openUs", "Set open"]], invert: false },
+];
+
+function renderCal() {
+  const root = $("calServos");
+  root.innerHTML = "";
+  for (const s of SERVOS) {
+    const c = cal[s.key];
+    const start = c.centerUs ?? c.openUs;
+    const div = document.createElement("div");
+    div.className = "cal";
+    div.innerHTML = `
+      <h3>${s.title}</h3>
+      <div class="vals">${s.marks.map(([k, label]) => `${label.replace("Set ", "")}: <b>${c[k]}</b> µs`).join(" · ")}</div>
+      <div class="row">
+        <input type="range" min="500" max="2500" step="5" value="${start}">
+        <output>${start}</output>
+      </div>
+      <div class="row">
+        ${s.marks.map(([k, label]) => `<button data-mark="${k}">${label}</button>`).join("")}
+        ${s.invert ? `<label><input type="checkbox" ${c.invert ? "checked" : ""}> Invert</label>` : ""}
+      </div>`;
+    const slider = div.querySelector("input[type=range]");
+    const out = div.querySelector("output");
+    slider.addEventListener("input", () => {
+      out.textContent = slider.value;
+      sendManual({ servo: s.key, us: Number(slider.value) });
+    });
+    div.querySelectorAll("button[data-mark]").forEach(b => b.onclick = () => {
+      c[b.dataset.mark] = Number(slider.value);
+      renderCal();
+      $("msg").textContent = "Unsaved changes";
+    });
+    const inv = div.querySelector("input[type=checkbox]");
+    if (inv) inv.onchange = () => { c.invert = inv.checked; $("msg").textContent = "Unsaved changes"; };
+    root.appendChild(div);
+  }
+}
+
+async function loadCal() {
+  cal = await api("/api/calibration");
+  renderCal();
+  $("msg").textContent = "";
+}
+
+$("saveCal").onclick = async () => {
+  try {
+    await api("/api/calibration", cal);
+    $("msg").textContent = "Saved";
+  } catch (e) {
+    $("msg").textContent = e.message;
+  }
+};
+$("reloadCal").onclick = loadCal;
+
+$("wifiReset").onclick = async () => {
+  if (!confirm("Forget Wi-Fi and restart into setup mode?")) return;
+  await api("/api/wifi/reset", {});
+  document.body.innerHTML = "<p style='margin:40px'>Restarting. Join the <b>Eyeball-Setup</b> Wi-Fi network to configure it.</p>";
+};
+
+connect();
+loadCal();
+api("/api/status").then(renderStatus).catch(() => {});
+</script>
+</body>
+</html>
