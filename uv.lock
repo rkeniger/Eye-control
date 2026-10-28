@@ -366,6 +366,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "ultralytics" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -376,6 +377,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ultralytics", specifier = ">=8.3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "websockets", specifier = ">=13" },
 ]
 
 [[package]]

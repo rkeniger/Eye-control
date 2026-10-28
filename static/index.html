@@ -15,6 +15,8 @@
     --warn: #c27c0e;
     --idle: #8a8a85;
     --stage: #e6e5e1;
+    --accent: #2563eb;
+    --accent-text: #fff;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -27,6 +29,8 @@
       --warn: #e8a33a;
       --idle: #77766f;
       --stage: #0a0a0a;
+      --accent: #4f8cff;
+      --accent-text: #0b0b0b;
     }
   }
   * { box-sizing: border-box; }
@@ -54,6 +58,8 @@
   .status[data-state="connecting"] .dot,
   .status[data-state="reconnecting"] .dot,
   .status[data-state="offline"] .dot { background: var(--warn); }
+  .status[data-state="eye-ok"] .dot { background: var(--live); }
+  .status[data-state="eye-off"] .dot { background: var(--warn); }
   .stats { display: flex; gap: 20px; font-variant-numeric: tabular-nums; }
   .stat b { font-weight: 600; }
   .stat span { color: var(--muted); margin-left: 4px; }
@@ -62,10 +68,59 @@
   main {
     flex: 1;
     min-height: 0;
-    display: grid;
-    place-items: center;
+    display: flex;
+    gap: 16px;
     padding: 16px;
   }
+  .view { flex: 1; min-width: 0; min-height: 0; display: grid; place-items: center; }
+  aside {
+    width: 320px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+  }
+  aside[hidden] { display: none; }
+  aside h2 { font-size: 15px; margin: 0 0 8px; }
+  aside p { color: var(--muted); margin: 0 0 12px; }
+  @media (max-width: 800px) {
+    main { flex-direction: column; overflow-y: auto; }
+    aside { width: 100%; }
+  }
+  button {
+    font: inherit;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .pad {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    background: var(--stage);
+    border-radius: 6px;
+    touch-action: none;
+    cursor: crosshair;
+    margin-bottom: 12px;
+  }
+  .pad::before, .pad::after { content: ""; position: absolute; background: var(--border); }
+  .pad::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .pad::after { top: 50%; left: 0; right: 0; height: 1px; }
+  .knob { position: absolute; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--surface); z-index: 1; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .msg { min-height: 1.4em; font-size: 13px; }
+  ol.points { margin: 0; padding: 0; list-style: none; font-variant-numeric: tabular-nums; font-size: 13px; }
+  ol.points li { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid var(--border); }
+  ol.points li span { flex: 1; }
+  ol.points button { padding: 2px 8px; }
   .stage {
     position: relative;
     background: var(--stage);
@@ -100,16 +155,31 @@
     <div class="stat"><b id="fps">–</b><span>fps</span></div>
     <div class="stat"><b id="lag">–</b><span>ms lag</span></div>
   </div>
+  <span class="status" id="eyeStatus" data-state="idle"><span class="dot"></span><span id="eyeText">Eye: –</span></span>
   <label class="conf">Min confidence
     <input type="range" id="conf" min="0.25" max="0.9" step="0.05" value="0.4">
     <output id="confOut">0.40</output>
   </label>
+  <button id="calibrate" aria-pressed="false">Calibrate eye</button>
 </header>
 <main>
-  <div class="stage stale" id="stage">
-    <canvas id="canvas"></canvas>
-    <div class="banner" id="banner">Connecting…</div>
+  <div class="view">
+    <div class="stage stale" id="stage">
+      <canvas id="canvas"></canvas>
+      <div class="banner" id="banner">Connecting…</div>
+    </div>
   </div>
+  <aside id="panel" hidden>
+    <h2>Teach the eye</h2>
+    <p>Stand somewhere in view, alone. Drag the pad until the eye looks straight at you, then save the point. Repeat at <span id="minPoints">3</span>+ spread-out spots, including near and far.</p>
+    <div class="pad" id="pad"><div class="knob" id="knob"></div></div>
+    <div class="actions">
+      <button class="primary" id="savePoint" disabled>Save point</button>
+      <button id="clearPoints">Clear all</button>
+    </div>
+    <div class="msg" id="teachMsg"></div>
+    <ol class="points" id="points"></ol>
+  </aside>
 </main>
 <script>
 const TRAIL_MS = 2000;
@@ -174,7 +244,7 @@ function updateTrails(people, now) {
   }
 }
 
-function draw({ bitmap, people }) {
+function draw({ bitmap, people, target }) {
   if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
     canvas.width = bitmap.width;
     canvas.height = bitmap.height;
@@ -183,9 +253,27 @@ function draw({ bitmap, people }) {
   const W = canvas.width, H = canvas.height, now = performance.now();
   ctx.drawImage(bitmap, 0, 0);
 
-  const visible = people.filter(p => p.conf >= minConf);
+  const visible = people.filter(p => p.conf >= minConf || p.id === target);
   const visibleIds = new Set(visible.map(p => p.id));
   countEl.textContent = visible.length;
+
+  // Taught calibration points, while teaching.
+  if (teaching && eyeState?.points) {
+    const r = Math.max(6, W / 160);
+    ctx.lineWidth = 2;
+    ctx.font = `600 ${Math.round(r * 1.6)}px system-ui, sans-serif`;
+    ctx.textBaseline = "middle";
+    eyeState.points.forEach((p, i) => {
+      ctx.strokeStyle = "#fff";
+      ctx.fillStyle = "rgba(0,0,0,.55)";
+      ctx.beginPath();
+      ctx.arc(p.u * W, p.v * H, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#fff";
+      ctx.fillText(String(i + 1), p.u * W + r * 1.5, p.v * H);
+    });
+  }
 
   // Trails: feet position over the last couple of seconds, fading with age.
   ctx.lineWidth = Math.max(2, W / 400);
@@ -210,11 +298,22 @@ function draw({ bitmap, people }) {
     const [x1, y1, x2, y2] = p.box;
     const x = x1 * W, y = y1 * H, w = (x2 - x1) * W, h = (y2 - y1) * H;
     const color = colorFor(p.id);
+    const isTarget = p.id === target;
     ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(2, W / 500);
+    ctx.lineWidth = Math.max(2, W / 500) * (isTarget ? 2.5 : 1);
     ctx.strokeRect(x, y, w, h);
+    if (isTarget) {
+      // Where the eye is aiming: face height on the box.
+      const ax = x + w / 2, ay = y + h * 0.15, r = Math.max(5, W / 200);
+      ctx.beginPath();
+      ctx.arc(ax, ay, r, 0, Math.PI * 2);
+      ctx.moveTo(ax - r * 2, ay); ctx.lineTo(ax + r * 2, ay);
+      ctx.moveTo(ax, ay - r * 2); ctx.lineTo(ax, ay + r * 2);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
 
-    const label = `#${p.id} ${p.conf.toFixed(2)}`;
+    const label = `${isTarget ? "◉ " : ""}#${p.id} ${p.conf.toFixed(2)}`;
     const pad = fontPx * 0.3;
     const tw = ctx.measureText(label).width + pad * 2;
     const th = fontPx + pad * 2;
@@ -245,9 +344,138 @@ async function onFrame(buf) {
   updateTrails(meta.people, performance.now());
   fpsEl.textContent = meta.fps.toFixed(1);
   lagEl.textContent = meta.lag_ms;
+  if (meta.eye) renderEyeSummary(meta.eye);
   pending?.bitmap.close();
-  pending = { bitmap, people: meta.people };
+  pending = { bitmap, people: meta.people, target: meta.target ?? null };
 }
+
+// ---- eye status + teach panel ------------------------------------------------
+
+const EYE_TEXT = { tracking: "tracking", hold: "holding", drift: "looking around", sleep: "asleep" };
+const panel = document.getElementById("panel");
+const pad = document.getElementById("pad");
+const knob = document.getElementById("knob");
+const teachMsg = document.getElementById("teachMsg");
+let teaching = false;
+let eyeState = null;     // full /api/eye state while the panel is open
+let teachGaze = { yaw: 0, pitch: 0 };
+let dragging = false;
+
+function renderEyeSummary(e) {
+  const el = document.getElementById("eyeStatus");
+  let text;
+  if (!e.enabled) text = "Eye: disabled";
+  else if (!e.connected) text = "Eye: not connected";
+  else if (e.teaching) text = "Eye: teaching";
+  else if (e.mode === "manual") text = "Eye: manual control";
+  else text = `Eye: ${EYE_TEXT[e.state] ?? e.state ?? "–"}${e.calibrated ? "" : " (uncalibrated)"}`;
+  el.dataset.state = e.enabled && e.connected ? "eye-ok" : "eye-off";
+  document.getElementById("eyeText").textContent = text;
+  document.getElementById("savePoint").disabled = !(teaching && e.connected);
+}
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+function limits() {
+  return eyeState?.limits ?? eyeState?.status?.limits ?? { yaw: [-30, 30], pitch: [-20, 20] };
+}
+
+function placeKnob() {
+  const { yaw: [y0, y1], pitch: [p0, p1] } = limits();
+  knob.style.left = `${((teachGaze.yaw - y0) / (y1 - y0 || 1)) * 100}%`;
+  knob.style.top = `${(1 - (teachGaze.pitch - p0) / (p1 - p0 || 1)) * 100}%`;
+}
+
+function renderTeach(state) {
+  eyeState = state;
+  renderEyeSummary(state);
+  document.getElementById("minPoints").textContent = state.minPoints;
+  if (!dragging && state.teachGaze) {
+    teachGaze = { yaw: state.teachGaze[0], pitch: state.teachGaze[1] };
+    placeKnob();
+  }
+  const list = document.getElementById("points");
+  list.innerHTML = "";
+  state.points.forEach((p, i) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<span>${i + 1}. (${p.u.toFixed(2)}, ${p.v.toFixed(2)}) → ${p.yaw}°, ${p.pitch}°</span><button>Delete</button>`;
+    li.querySelector("button").onclick = () => api("DELETE", `/api/calibration/points/${i}`).then(renderTeach);
+    list.appendChild(li);
+  });
+  if (!state.connected) teachMsg.textContent = "Eye is not connected.";
+  else if (state.status?.mode === "manual") teachMsg.textContent = "Eye is under manual control on its own page; switch it to Auto.";
+  else if (state.points.length < state.minPoints) teachMsg.textContent = `${state.points.length}/${state.minPoints} points. Until then a rough default mapping is used.`;
+  else teachMsg.textContent = `${state.points.length} points taught.`;
+  if (lastFrame) draw(lastFrame);
+}
+
+// One request in flight at a time, always sending the newest aim.
+let aimPending = null, aimBusy = false;
+async function sendAim(aim) {
+  aimPending = aim;
+  if (aimBusy) return;
+  aimBusy = true;
+  while (aimPending) {
+    const a = aimPending;
+    aimPending = null;
+    try { await api("POST", "/api/teach/aim", a); } catch (e) { teachMsg.textContent = e.message; }
+  }
+  aimBusy = false;
+}
+
+function onPad(e) {
+  const r = pad.getBoundingClientRect();
+  const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  const fy = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+  const { yaw: [y0, y1], pitch: [p0, p1] } = limits();
+  teachGaze = { yaw: +(y0 + fx * (y1 - y0)).toFixed(1), pitch: +(p1 - fy * (p1 - p0)).toFixed(1) };
+  placeKnob();
+  sendAim(teachGaze);
+}
+pad.addEventListener("pointerdown", e => { dragging = true; pad.setPointerCapture(e.pointerId); onPad(e); });
+pad.addEventListener("pointermove", e => { if (dragging) onPad(e); });
+pad.addEventListener("pointerup", () => { dragging = false; });
+pad.addEventListener("pointercancel", () => { dragging = false; });
+
+let teachTimer = null;
+async function setTeaching(on) {
+  teaching = on;
+  panel.hidden = !on;
+  document.getElementById("calibrate").setAttribute("aria-pressed", on);
+  clearInterval(teachTimer);
+  try {
+    renderTeach(await api("POST", "/api/teach", { active: on }));
+  } catch (e) {
+    teachMsg.textContent = e.message;
+  }
+  // Keep teach mode alive (it times out server-side) and refresh state while the panel is open.
+  if (on) teachTimer = setInterval(() => api("POST", "/api/teach", { active: true }).then(renderTeach).catch(() => {}), 3000);
+}
+
+document.getElementById("calibrate").onclick = () => setTeaching(!teaching);
+document.getElementById("savePoint").onclick = async () => {
+  try {
+    renderTeach(await api("POST", "/api/calibration/points"));
+  } catch (e) {
+    teachMsg.textContent = e.message;
+  }
+};
+document.getElementById("clearPoints").onclick = async () => {
+  if (confirm("Delete all taught points?")) renderTeach(await api("DELETE", "/api/calibration/points"));
+};
+window.addEventListener("pagehide", () => {
+  if (teaching) fetch("/api/teach", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: '{"active":false}' });
+});
+api("GET", "/api/eye").then(renderEyeSummary).catch(() => {});
 
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
