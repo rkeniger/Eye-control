@@ -56,17 +56,27 @@ void Eye::begin() {
     pitch_.reset(cal_.pitch.centerUs);
     lid_.reset(lidToUs(1.0f));
     lid_.setSpeed(LID_SPEED_US_S);
-    // The servos' real positions are unknown at power-on, so they will snap to centre.
-    // Attaching one at a time spreads out the current spike.
-    yaw_.attach();
-    delay(300);
-    pitch_.attach();
-    delay(300);
-    lid_.attach();
-
     uint32_t now = millis();
     lastTick_ = now;
     enter(State::Hold, now);
+}
+
+void Eye::attachServos() {
+    // The servos' real positions are unknown at power-on, so they will snap to centre.
+    // Attaching one at a time spreads out the current spike. The lock is released while
+    // waiting so web handlers aren't blocked.
+    for (ServoChannel *servo : {&yaw_, &pitch_, &lid_}) {
+        {
+            Lock lock(mutex_);
+            servo->attach();
+        }
+        if (servo != &lid_) delay(SERVO_ATTACH_STAGGER_MS);
+    }
+    // Start the idle timeline now rather than from before the Wi-Fi wait.
+    Lock lock(mutex_);
+    uint32_t now = millis();
+    lastTick_ = now;
+    if (mode_ == Mode::Auto && state_ == State::Hold) stateSince_ = now;
 }
 
 void Eye::tick(uint32_t now) {

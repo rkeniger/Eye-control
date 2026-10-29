@@ -16,6 +16,7 @@ enum class Servo { Yaw, Pitch, Lid };
 class Eye {
    public:
     void begin();
+    void attachServos();  // call once at boot, after Wi-Fi; blocks for the staggered power-up
     void tick(uint32_t now);
 
     // Tracker (auto mode) commands. Angles are degrees around the calibrated centre.

@@ -11,6 +11,10 @@ constexpr const char *HOSTNAME = "eyeball";
 constexpr const char *SETUP_AP_SSID = "Eyeball-Setup";
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 
+// Servos power up one at a time, after Wi-Fi is up, so their start-up current spikes
+// don't coincide with each other or with the radio's.
+constexpr uint32_t SERVO_ATTACH_STAGGER_MS = 1000;
+
 // SG90: roughly 2000 us of pulse width over ~180 degrees.
 constexpr float US_PER_DEG = 11.0f;
 // Hard bounds for any pulse, even during calibration.
