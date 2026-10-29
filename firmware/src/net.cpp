@@ -24,6 +24,8 @@ String scannedNetworks;  // <option> list for the setup page
 uint32_t restartAt = 0;
 uint32_t lastStatus = 0;
 uint32_t lastCleanup = 0;
+bool serverRunning = false;
+int ledOnline = -1;  // last colour shown: 1 green, 0 red, -1 not yet set
 
 const char SETUP_PAGE[] PROGMEM = R"html(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -219,6 +221,13 @@ void startSetupPortal() {
     server.onNotFound([](AsyncWebServerRequest *request) { request->redirect("http://" + WiFi.softAPIP().toString() + "/"); });
 }
 
+void showStatusLed(bool online) {
+    if (online == ledOnline) return;
+    ledOnline = online;
+    if (online) neopixelWrite(PIN_STATUS_LED, 0, STATUS_LED_BRIGHTNESS, 0);
+    else neopixelWrite(PIN_STATUS_LED, STATUS_LED_BRIGHTNESS, 0, 0);
+}
+
 bool joinWifi() {
     String ssid, pass;
     if (!settings::loadWifi(ssid, pass)) return false;
@@ -241,6 +250,7 @@ bool joinWifi() {
 
 void begin(Eye &e) {
     eye = &e;
+    showStatusLed(false);
     // API and WebSocket first so the static file handler never shadows them.
     ws.onEvent(onWsEvent);
     server.addHandler(&ws);
@@ -255,10 +265,12 @@ void begin(Eye &e) {
         startSetupPortal();
     }
     server.begin();
+    serverRunning = true;
 }
 
 void loop() {
     uint32_t now = millis();
+    showStatusLed(serverRunning && !setupMode && WiFi.status() == WL_CONNECTED);
     if (setupMode) dns.processNextRequest();
     if (restartAt && (int32_t)(now - restartAt) >= 0) ESP.restart();
     if (now - lastStatus >= STATUS_INTERVAL_MS) {

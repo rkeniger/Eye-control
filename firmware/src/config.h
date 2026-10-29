@@ -7,6 +7,11 @@ constexpr int PIN_YAW = 4;
 constexpr int PIN_PITCH = 5;
 constexpr int PIN_LID = 6;
 
+// On-board WS2812 RGB LED: green = on Wi-Fi with the server running, red = not.
+// GPIO48 on most N16R8 boards; some revisions wire it to GPIO38.
+constexpr int PIN_STATUS_LED = 48;
+constexpr uint8_t STATUS_LED_BRIGHTNESS = 24;  // 0-255; the LED is very bright at full power
+
 constexpr const char *HOSTNAME = "eyeball";
 constexpr const char *SETUP_AP_SSID = "Eyeball-Setup";
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;

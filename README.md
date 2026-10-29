@@ -67,6 +67,7 @@ uvx --python 3.12 platformio device monitor     # serial log
 
 ### Behaviour
 
+- **Status LED:** the board's RGB LED is green when it's on Wi-Fi with the server running, and red otherwise (while joining, in setup mode, or after losing Wi-Fi). If it stays dark, change `PIN_STATUS_LED` in `config.h` from 48 to 38.
 - **Tracking:** the eye looks at the highest-confidence person, sticking with them unless someone else is ≥0.15 more confident for ~1 s, or they've been gone for 0.5 s. It aims at face height (15% down the box). It blinks every 3–8 s, and also when it switches to a new person.
 - **Nobody in view:** it holds its gaze for 2 s, glances around slowly for 30 s, then centres, closes the lid and stops driving the servos (sleep). It wakes when someone appears.
 - **Failsafe:** if no tracker command arrives for 5 s, it behaves as if nobody is in view.
