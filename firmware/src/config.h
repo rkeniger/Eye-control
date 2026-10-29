@@ -12,6 +12,9 @@ constexpr int PIN_LID = 6;
 constexpr int PIN_STATUS_LED = 48;
 constexpr uint8_t STATUS_LED_BRIGHTNESS = 24;  // 0-255; the LED is very bright at full power
 
+// Log shown on the web page, from boot. Oldest output is dropped once this fills.
+constexpr size_t LOG_BUFFER_SIZE = 32 * 1024;
+
 constexpr const char *HOSTNAME = "eyeball";
 constexpr const char *SETUP_AP_SSID = "Eyeball-Setup";
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;

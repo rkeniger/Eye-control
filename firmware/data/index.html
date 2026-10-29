@@ -50,6 +50,10 @@
   .vals { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
   .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   #msg { min-height: 1.4em; }
+  section.wide { grid-column: 1 / -1; }
+  .log { margin: 0; height: 360px; overflow: auto; padding: 10px 12px; background: var(--pad); border-radius: 6px;
+         font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .log .gap { color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
@@ -97,6 +101,12 @@
     </div>
     <p class="note" id="msg"></p>
     <p class="note">Move each servo with its slider until it is just short of the printed hard stop, then set that limit. Raw moves ignore saved limits, so go slowly.</p>
+  </section>
+
+  <section class="wide">
+    <h2>Log</h2>
+    <pre class="log" id="log" aria-live="off"></pre>
+    <div class="row"><button id="logDownload">Download</button><span class="vals" id="logInfo"></span></div>
   </section>
 
   <section>
@@ -281,8 +291,59 @@ $("wifiReset").onclick = async () => {
   document.body.innerHTML = "<p style='margin:40px'>Restarting. Join the <b>Eyeball-Setup</b> Wi-Fi network to configure it.</p>";
 };
 
+// ---- log -----------------------------------------------------------------------
+
+const logEl = $("log");
+let logOffset = 0;
+let logBoot = null;
+
+function appendLog(text, cls) {
+  const node = cls ? Object.assign(document.createElement("span"), { className: cls, textContent: text })
+                   : document.createTextNode(text);
+  logEl.append(node);
+}
+
+async function pollLog() {
+  try {
+    const res = await fetch(`/api/log?since=${logOffset}`, { cache: "no-store" });
+    const boot = res.headers.get("X-Log-Boot");
+    if (logBoot !== null && boot !== logBoot) {
+      // Restarted: start over from the new boot's first byte.
+      logBoot = boot;
+      logOffset = 0;
+      logEl.textContent = "";
+      appendLog("— board restarted —\n", "gap");
+      setTimeout(pollLog, 0);
+      return;
+    }
+    logBoot = boot;
+    const start = Number(res.headers.get("X-Log-Start"));
+    const end = Number(res.headers.get("X-Log-End"));
+    const text = await res.text();
+    // Stay pinned to the bottom unless the user has scrolled up to read.
+    const pinned = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24;
+    if (start > logOffset) {
+      appendLog(`… ${start - logOffset} bytes of older output dropped …\n`, "gap");
+    }
+    if (text) appendLog(text);
+    logOffset = end;
+    $("logInfo").textContent = `${(end / 1024).toFixed(1)} KB since boot`;
+    if (pinned) logEl.scrollTop = logEl.scrollHeight;
+  } catch {
+    // The board is restarting or unreachable; keep what we have and try again.
+  }
+  setTimeout(pollLog, 1000);
+}
+
+$("logDownload").onclick = () => {
+  const url = URL.createObjectURL(new Blob([logEl.textContent], { type: "text/plain" }));
+  Object.assign(document.createElement("a"), { href: url, download: "eyeball-log.txt" }).click();
+  URL.revokeObjectURL(url);
+};
+
 connect();
 loadCal();
+pollLog();
 api("/api/status").then(renderStatus).catch(() => {});
 </script>
 </body>

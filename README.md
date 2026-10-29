@@ -67,6 +67,7 @@ uvx --python 3.12 platformio device monitor     # serial log
 
 ### Behaviour
 
+- **Log:** the *Log* card on http://eyeball.local shows everything printed since boot (the last 32 KB), including the reset reason, so a `BROWNOUT` restart shows up there.
 - **Status LED:** the board's RGB LED is green when it's on Wi-Fi with the server running, and red otherwise (while joining, in setup mode, or after losing Wi-Fi). If it stays dark, change `PIN_STATUS_LED` in `config.h` from 48 to 38.
 - **Tracking:** the eye looks at the highest-confidence person, sticking with them unless someone else is ≥0.15 more confident for ~1 s, or they've been gone for 0.5 s. It aims at face height (15% down the box). It blinks every 3–8 s, and also when it switches to a new person.
 - **Nobody in view:** it holds its gaze for 2 s, glances around slowly for 30 s, then centres, closes the lid and stops driving the servos (sleep). It wakes when someone appears.
@@ -84,6 +85,7 @@ uvx --python 3.12 platformio device monitor     # serial log
 | `POST /api/mode` | `{"mode":"auto"\|"manual"}` |
 | `POST /api/blink` | |
 | `GET/POST /api/calibration` | `{"yaw":{minUs,centerUs,maxUs,invert},"pitch":{…},"lid":{closedUs,openUs}}` |
+| `GET /api/log?since=N` | Log text since boot from byte offset N; headers `X-Log-Start`, `X-Log-End` (next `since`), `X-Log-Boot` (changes on restart). The page's *Log* card follows it live |
 | `POST /api/wifi/reset` | Forget Wi-Fi and restart into setup mode |
 
 Angles are degrees around the calibrated centre (≈11 µs/°).

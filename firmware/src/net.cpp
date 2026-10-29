@@ -8,6 +8,7 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "log.h"
 
 namespace net {
 
@@ -68,7 +69,9 @@ void handleEyeCommand(JsonVariantConst cmd) {
     }
 }
 
-void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+    if (type == WS_EVT_CONNECT) Log.printf("WebSocket #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+    if (type == WS_EVT_DISCONNECT) Log.printf("WebSocket #%u disconnected\n", client->id());
     if (type != WS_EVT_DATA) return;
     auto *info = static_cast<AwsFrameInfo *>(arg);
     // Commands are small; only accept complete single-frame text messages.
@@ -113,6 +116,20 @@ void addJsonRoute(const char *path, std::function<void(AsyncWebServerRequest *, 
 
 void setupApiRoutes() {
     server.on("/api/status", HTTP_GET, sendStatus);
+    // Log text from byte offset `since`; X-Log-Start/X-Log-End say which range was returned,
+    // X-Log-Boot changes when the board restarts.
+    server.on("/api/log", HTTP_GET, [](AsyncWebServerRequest *request) {
+        uint32_t since = request->hasParam("since") ? request->getParam("since")->value().toInt() : 0;
+        std::unique_ptr<char[]> text(new char[LOG_BUFFER_SIZE]);
+        logbuf::Chunk chunk = logbuf::read(since, text.get(), LOG_BUFFER_SIZE);
+        AsyncResponseStream *response = request->beginResponseStream("text/plain; charset=utf-8");
+        response->addHeader("X-Log-Boot", String(logbuf::bootId()));
+        response->addHeader("X-Log-Start", String(chunk.start));
+        response->addHeader("X-Log-End", String(chunk.end));
+        response->addHeader("Cache-Control", "no-store");
+        response->write(reinterpret_cast<const uint8_t *>(text.get()), chunk.end - chunk.start);
+        request->send(response);
+    });
 
     addJsonRoute("/api/eye", [](AsyncWebServerRequest *request, JsonVariant &json) {
         handleEyeCommand(json);
@@ -198,7 +215,7 @@ void startSetupPortal() {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(SETUP_AP_SSID);
     dns.start(53, "*", WiFi.softAPIP());
-    Serial.printf("Setup portal: join '%s' and open http://%s\n", SETUP_AP_SSID,
+    Log.printf("Setup portal: join '%s' and open http://%s\n", SETUP_AP_SSID,
                   WiFi.softAPIP().toString().c_str());
 
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -228,22 +245,31 @@ void showStatusLed(bool online) {
     else neopixelWrite(PIN_STATUS_LED, STATUS_LED_BRIGHTNESS, 0, 0);
 }
 
+void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
+        Log.printf("Wi-Fi disconnected (reason %u)\n", info.wifi_sta_disconnected.reason);
+    else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP)
+        Log.printf("Wi-Fi got IP %s, RSSI %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+}
+
 bool joinWifi() {
     String ssid, pass;
-    if (!settings::loadWifi(ssid, pass)) return false;
+    if (!settings::loadWifi(ssid, pass)) {
+        Log.println("No saved Wi-Fi");
+        return false;
+    }
+    WiFi.onEvent(onWifiEvent);
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(HOSTNAME);
     WiFi.setSleep(false);  // modem sleep adds 100+ ms latency spikes
     WiFi.setAutoReconnect(true);
     WiFi.begin(ssid.c_str(), pass.c_str());
-    Serial.printf("Joining '%s'", ssid.c_str());
+    Log.printf("Joining '%s'\n", ssid.c_str());
     uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
-        delay(250);
-        Serial.print('.');
-    }
-    Serial.println();
-    return WiFi.status() == WL_CONNECTED;
+    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) delay(250);
+    if (WiFi.status() == WL_CONNECTED) return true;
+    Log.printf("Couldn't join '%s' within %lu s\n", ssid.c_str(), (unsigned long)(WIFI_CONNECT_TIMEOUT_MS / 1000));
+    return false;
 }
 
 }  // namespace
@@ -257,7 +283,7 @@ void begin(Eye &e) {
     setupApiRoutes();
 
     if (joinWifi()) {
-        Serial.printf("Connected: http://%s.local (%s)\n", HOSTNAME, WiFi.localIP().toString().c_str());
+        Log.printf("Connected: http://%s.local (%s)\n", HOSTNAME, WiFi.localIP().toString().c_str());
         if (MDNS.begin(HOSTNAME)) MDNS.addService("http", "tcp", 80);
         server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
         server.onNotFound([](AsyncWebServerRequest *request) { request->send(404, "text/plain", "Not found"); });
