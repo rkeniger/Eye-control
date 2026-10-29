@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -266,7 +267,10 @@ class EyeController:
         backoff = 1.0
         while True:
             try:
-                async with websockets.connect(self.ws_url, open_timeout=5, ping_interval=10) as ws:
+                # IPv4 only: the ESP32 has no IPv6, and macOS waits ~5 s for an mDNS AAAA answer that never comes.
+                async with websockets.connect(
+                    self.ws_url, open_timeout=5, ping_interval=10, family=socket.AF_INET
+                ) as ws:
                     log.info("Connected to eye at %s", self.ws_url)
                     self.connected = True
                     backoff = 1.0
