@@ -33,6 +33,9 @@ Calibration loadCalibration();
 void saveCalibration(const Calibration &cal);
 bool validCalibration(const Calibration &cal);
 
+bool loadAuto();  // follow the tracker; off (manual) unless switched on
+void saveAuto(bool on);
+
 bool loadWifi(String &ssid, String &pass);
 void saveWifi(const String &ssid, const String &pass);
 void clearWifi();

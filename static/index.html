@@ -63,6 +63,13 @@
   .stats { display: flex; gap: 20px; font-variant-numeric: tabular-nums; }
   .stat b { font-weight: 600; }
   .stat span { color: var(--muted); margin-left: 4px; }
+  label.switch { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
+  label.switch input { appearance: none; flex: none; width: 36px; height: 20px; margin: 0; border-radius: 10px; background: var(--border); position: relative; cursor: pointer; transition: background .15s; }
+  label.switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s; }
+  label.switch input:checked { background: var(--accent); }
+  label.switch input:checked::after { transform: translateX(16px); }
+  label.switch input:disabled { opacity: .5; cursor: default; }
+  label.switch input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   label.conf { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); margin-left: auto; }
   label.conf output { color: var(--text); font-variant-numeric: tabular-nums; min-width: 3ch; }
   main {
@@ -156,6 +163,7 @@
     <div class="stat"><b id="lag">–</b><span>ms lag</span></div>
   </div>
   <span class="status" id="eyeStatus" data-state="idle"><span class="dot"></span><span id="eyeText">Eye: –</span></span>
+  <label class="switch" title="Saved on the eye. Off, it stays where it was put."><input type="checkbox" role="switch" id="eyeAuto" disabled> Follow people</label>
   <label class="conf">Min confidence
     <input type="range" id="conf" min="0.25" max="0.9" step="0.05" value="0.4">
     <output id="confOut">0.40</output>
@@ -367,10 +375,13 @@ function renderEyeSummary(e) {
   if (!e.enabled) text = "Eye: disabled";
   else if (!e.connected) text = "Eye: not connected";
   else if (e.teaching) text = "Eye: teaching";
-  else if (e.mode === "manual") text = "Eye: manual control";
+  else if (e.mode === "manual") text = "Eye: holding (Follow off)";
   else text = `Eye: ${EYE_TEXT[e.state] ?? e.state ?? "–"}${e.calibrated ? "" : " (uncalibrated)"}`;
   el.dataset.state = e.enabled && e.connected ? "eye-ok" : "eye-off";
   document.getElementById("eyeText").textContent = text;
+  const autoSwitch = document.getElementById("eyeAuto");
+  autoSwitch.disabled = !(e.enabled && e.connected);
+  autoSwitch.checked = e.mode === "auto";
   document.getElementById("savePoint").disabled = !(teaching && e.connected);
 }
 
@@ -384,6 +395,14 @@ async function api(method, path, body) {
   if (!res.ok) throw new Error(data.detail || res.statusText);
   return data;
 }
+
+document.getElementById("eyeAuto").addEventListener("change", async e => {
+  try {
+    renderEyeSummary(await api("POST", "/api/eye/auto", { auto: e.target.checked }));
+  } catch {
+    e.target.checked = !e.target.checked;
+  }
+});
 
 function limits() {
   return eyeState?.limits ?? eyeState?.status?.limits ?? { yaw: [-30, 30], pitch: [-20, 20] };

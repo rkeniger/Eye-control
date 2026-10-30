@@ -3,6 +3,7 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "log.h"
 
 namespace {
 
@@ -49,6 +50,8 @@ float Eye::lidToUs(float open) const {
 void Eye::begin() {
     Lock lock(mutex_);
     cal_ = settings::loadCalibration();
+    mode_ = settings::loadAuto() ? Mode::Auto : Mode::Manual;
+    Log.printf("Auto %s\n", mode_ == Mode::Auto ? "on" : "off (manual)");
     yaw_.begin(PIN_YAW, 0);
     pitch_.begin(PIN_PITCH, 1);
     lid_.begin(PIN_LID, 2);
@@ -83,13 +86,13 @@ void Eye::tick(uint32_t now) {
     Lock lock(mutex_);
     float dt = (now - lastTick_) / 1000.0f;
     lastTick_ = now;
+    if (suspended_) return;
 
-    if (mode_ == Mode::Manual) {
-        if (now - lastManual_ > MANUAL_TIMEOUT_MS) {
-            mode_ = Mode::Auto;
-            enter(State::Hold, now);
-        }
-    } else {
+    bool teaching = (int32_t)(teachUntil_ - now) > 0;
+    if (teaching_ && !teaching && mode_ == Mode::Auto) enter(State::Hold, now);
+    teaching_ = teaching;
+
+    if (mode_ == Mode::Auto && !teaching) {
         switch (state_) {
             case State::Tracking:
                 if (now - lastTrackerMsg_ > FAILSAFE_MS) enter(State::Hold, now);
@@ -108,17 +111,18 @@ void Eye::tick(uint32_t now) {
     }
 
     // Lid: open unless asleep (auto) or set by hand (manual); blinks briefly close it.
-    float lidOpen = mode_ == Mode::Manual ? manualLid_ : (state_ == State::Sleep ? 0.0f : 1.0f);
-    bool canBlink = mode_ == Mode::Auto && state_ != State::Sleep;
+    float lidOpen = teaching ? 1.0f : mode_ == Mode::Manual ? manualLid_ : (state_ == State::Sleep ? 0.0f : 1.0f);
+    bool canBlink = mode_ == Mode::Auto && state_ != State::Sleep && !teaching;
     if (canBlink && (int32_t)(now - nextBlink_) >= 0) {
         blinkUntil_ = now + BLINK_CLOSED_MS;
         scheduleBlink(now);
     }
     if ((int32_t)(blinkUntil_ - now) > 0) lidOpen = 0.0f;
-    bool rawLid = mode_ == Mode::Manual && manualLidUs_ > 0;
+    bool rawLid = mode_ == Mode::Manual && manualLidUs_ > 0 && !teaching;
     lid_.setTarget(rawLid ? manualLidUs_ : lidToUs(lidOpen));
 
-    float speed = (mode_ == Mode::Manual || state_ == State::Tracking ? TRACK_SPEED_DEG_S : DRIFT_SPEED_DEG_S) *
+    bool fast = mode_ == Mode::Manual || state_ == State::Tracking || teaching;
+    float speed = (fast ? TRACK_SPEED_DEG_S : DRIFT_SPEED_DEG_S) *
                   US_PER_DEG;
     yaw_.setSpeed(speed);
     pitch_.setSpeed(speed);
@@ -176,7 +180,7 @@ void Eye::track(float yawDeg, float pitchDeg) {
     Lock lock(mutex_);
     uint32_t now = millis();
     lastTrackerMsg_ = now;
-    if (mode_ != Mode::Auto) return;
+    if (mode_ != Mode::Auto || suspended_ || teaching_) return;
     if (state_ != State::Tracking) enter(State::Tracking, now);
     yaw_.setTarget(yawToUs(yawDeg));
     pitch_.setTarget(pitchToUs(pitchDeg));
@@ -186,23 +190,29 @@ void Eye::absent() {
     Lock lock(mutex_);
     uint32_t now = millis();
     lastTrackerMsg_ = now;
-    if (mode_ == Mode::Auto && state_ == State::Tracking) enter(State::Hold, now);
+    if (mode_ == Mode::Auto && !suspended_ && state_ == State::Tracking) enter(State::Hold, now);
 }
 
 void Eye::newTarget() {
     Lock lock(mutex_);
-    if (mode_ == Mode::Auto && state_ != State::Sleep) blinkUntil_ = millis() + BLINK_CLOSED_MS;
+    if (mode_ == Mode::Auto && !suspended_ && state_ != State::Sleep) blinkUntil_ = millis() + BLINK_CLOSED_MS;
+}
+
+void Eye::teach(float yawDeg, float pitchDeg) {
+    Lock lock(mutex_);
+    if (suspended_) return;
+    uint32_t now = millis();
+    lastTrackerMsg_ = now;
+    teachUntil_ = now + TEACH_HOLD_MS;
+    attachAll();
+    yaw_.setTarget(yawToUs(yawDeg));
+    pitch_.setTarget(pitchToUs(pitchDeg));
 }
 
 void Eye::manual(const float *yawDeg, const float *pitchDeg, const float *lid) {
     Lock lock(mutex_);
-    uint32_t now = millis();
-    if (mode_ != Mode::Manual) {
-        mode_ = Mode::Manual;
-        manualLid_ = 1.0f;
-        manualLidUs_ = 0;
-    }
-    lastManual_ = now;
+    if (suspended_) return;
+    setAutoLocked(false, millis());
     attachAll();
     if (yawDeg) yaw_.setTarget(yawToUs(*yawDeg));
     if (pitchDeg) pitch_.setTarget(pitchToUs(*pitchDeg));
@@ -214,9 +224,9 @@ void Eye::manual(const float *yawDeg, const float *pitchDeg, const float *lid) {
 
 void Eye::manualUs(Servo servo, float us) {
     Lock lock(mutex_);
+    if (suspended_) return;
     us = constrain(us, (float)ABS_MIN_US, (float)ABS_MAX_US);
-    mode_ = Mode::Manual;
-    lastManual_ = millis();
+    setAutoLocked(false, millis());
     attachAll();
     switch (servo) {
         case Servo::Yaw: yaw_.setTarget(us); break;
@@ -229,27 +239,48 @@ void Eye::manualUs(Servo servo, float us) {
     }
 }
 
-void Eye::setMode(Mode mode) {
+void Eye::setAuto(bool on) {
     Lock lock(mutex_);
-    uint32_t now = millis();
-    if (mode == Mode::Manual) {
-        if (mode_ != Mode::Manual) {
-            manualLid_ = 1.0f;
-            manualLidUs_ = 0;
-        }
-        mode_ = Mode::Manual;
-        lastManual_ = now;
-        attachAll();
-    } else if (mode_ != Mode::Auto) {
-        mode_ = Mode::Auto;
+    if (!suspended_) setAutoLocked(on, millis());
+}
+
+void Eye::setAutoLocked(bool on, uint32_t now) {
+    Mode mode = on ? Mode::Auto : Mode::Manual;
+    if (mode == mode_) return;
+    mode_ = mode;
+    settings::saveAuto(on);
+    Log.printf("Auto %s\n", on ? "on" : "off");
+    if (on) {
         enter(State::Hold, now);
+    } else {
+        // Stay where the eye is right now, lid open.
+        yaw_.setTarget(yaw_.current());
+        pitch_.setTarget(pitch_.current());
+        manualLid_ = 1.0f;
+        manualLidUs_ = 0;
+        attachAll();
     }
 }
 
 void Eye::blink() {
     Lock lock(mutex_);
+    if (suspended_) return;
     attachAll();
     blinkUntil_ = millis() + BLINK_CLOSED_MS;
+}
+
+void Eye::suspend() {
+    Lock lock(mutex_);
+    suspended_ = true;
+    detachAll();
+}
+
+void Eye::resume() {
+    Lock lock(mutex_);
+    if (!suspended_) return;
+    suspended_ = false;
+    attachAll();
+    if (mode_ == Mode::Auto) enter(State::Hold, millis());
 }
 
 Calibration Eye::calibration() {
@@ -290,7 +321,8 @@ void Eye::status(JsonObject out) {
     pl.add(lo);
     pl.add(hi);
     out["trackerActive"] = lastTrackerMsg_ && now - lastTrackerMsg_ < FAILSAFE_MS;
-    out["manualRemainingMs"] = mode_ == Mode::Manual ? MANUAL_TIMEOUT_MS - min(now - lastManual_, MANUAL_TIMEOUT_MS) : 0;
+    out["teaching"] = teaching_;
+    out["suspended"] = suspended_;
     out["uptimeMs"] = now;
     out["rssi"] = WiFi.RSSI();
     out["ip"] = WiFi.localIP().toString();

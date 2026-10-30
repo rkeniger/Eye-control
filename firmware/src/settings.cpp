@@ -23,8 +23,8 @@ bool validCalibration(const Calibration &cal) {
 Calibration loadCalibration() {
     Preferences prefs;
     Calibration cal = DEFAULT_CALIBRATION;
-    prefs.begin("eye", true);
-    if (prefs.getBytesLength("cal") == sizeof(Calibration)) {
+    prefs.begin("eye", false);  // read-write creates the namespace, avoiding a NOT_FOUND log
+    if (prefs.isKey("cal") && prefs.getBytesLength("cal") == sizeof(Calibration)) {
         Calibration stored;
         prefs.getBytes("cal", &stored, sizeof(stored));
         if (validCalibration(stored)) cal = stored;
@@ -37,6 +37,21 @@ void saveCalibration(const Calibration &cal) {
     Preferences prefs;
     prefs.begin("eye", false);
     prefs.putBytes("cal", &cal, sizeof(cal));
+    prefs.end();
+}
+
+bool loadAuto() {
+    Preferences prefs;
+    prefs.begin("eye", false);  // read-write creates the namespace, avoiding a NOT_FOUND log
+    bool on = prefs.getBool("auto", false);
+    prefs.end();
+    return on;
+}
+
+void saveAuto(bool on) {
+    Preferences prefs;
+    prefs.begin("eye", false);
+    prefs.putBool("auto", on);
     prefs.end();
 }
 

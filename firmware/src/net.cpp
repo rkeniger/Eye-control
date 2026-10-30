@@ -4,11 +4,13 @@
 #include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
-#include <LittleFS.h>
 #include <WiFi.h>
 
 #include "config.h"
 #include "log.h"
+#include "ota.h"
+#include "version_info.h"
+#include "web_ui.h"
 
 namespace net {
 
@@ -45,9 +47,16 @@ button{margin-top:20px;width:100%;padding:12px;font:inherit;font-weight:600;bord
 <button>Save and restart</button>
 </form></body></html>)html";
 
+void fillStatus(JsonObject out) {
+    eye->status(out);
+    out["version"] = FIRMWARE_VERSION;
+    out["built"] = FIRMWARE_BUILT;
+    out["boot"] = logbuf::bootId();
+}
+
 void sendStatus(AsyncWebServerRequest *request) {
     JsonDocument doc;
-    eye->status(doc.to<JsonObject>());
+    fillStatus(doc.to<JsonObject>());
     String body;
     serializeJson(doc, body);
     request->send(200, "application/json", body);
@@ -59,10 +68,14 @@ void sendError(AsyncWebServerRequest *request, const char *message) {
 }
 
 // Tracker command, shared by POST /api/eye and the WebSocket:
-// {"yaw":deg,"pitch":deg[,"newTarget":true]} | {"present":false}
+// {"yaw":deg,"pitch":deg[,"newTarget":true]} | {"present":false} | {"yaw":deg,"pitch":deg,"teach":true}
+// | {"auto":bool}
 void handleEyeCommand(JsonVariantConst cmd) {
+    if (cmd["auto"].is<bool>()) eye->setAuto(cmd["auto"].as<bool>());
     if (cmd["newTarget"] | false) eye->newTarget();
-    if (cmd["present"].is<bool>() && !cmd["present"].as<bool>()) {
+    if (cmd["teach"] | false) {
+        if (cmd["yaw"].is<float>() && cmd["pitch"].is<float>()) eye->teach(cmd["yaw"].as<float>(), cmd["pitch"].as<float>());
+    } else if (cmd["present"].is<bool>() && !cmd["present"].as<bool>()) {
         eye->absent();
     } else if (cmd["yaw"].is<float>() && cmd["pitch"].is<float>()) {
         eye->track(cmd["yaw"].as<float>(), cmd["pitch"].as<float>());
@@ -86,7 +99,7 @@ void broadcastStatus() {
     JsonDocument doc;
     JsonObject status = doc.to<JsonObject>();
     status["type"] = "status";
-    eye->status(status);
+    fillStatus(status);
     String body;
     serializeJson(doc, body);
     ws.textAll(body);
@@ -154,11 +167,10 @@ void setupApiRoutes() {
         sendStatus(request);
     });
 
-    addJsonRoute("/api/mode", [](AsyncWebServerRequest *request, JsonVariant &json) {
-        String mode = json["mode"] | "";
-        if (mode == "auto") eye->setMode(Mode::Auto);
-        else if (mode == "manual") eye->setMode(Mode::Manual);
-        else return sendError(request, "mode must be auto or manual");
+    // {"auto":bool}: follow the tracker or not; saved.
+    addJsonRoute("/api/auto", [](AsyncWebServerRequest *request, JsonVariant &json) {
+        if (!json["auto"].is<bool>()) return sendError(request, "auto must be true or false");
+        eye->setAuto(json["auto"].as<bool>());
         sendStatus(request);
     });
 
@@ -277,15 +289,21 @@ bool joinWifi() {
 void begin(Eye &e) {
     eye = &e;
     showStatusLed(false);
-    // API and WebSocket first so the static file handler never shadows them.
     ws.onEvent(onWsEvent);
     server.addHandler(&ws);
     setupApiRoutes();
+    ota::addRoutes(server);
 
     if (joinWifi()) {
         Log.printf("Connected: http://%s.local (%s)\n", HOSTNAME, WiFi.localIP().toString().c_str());
         if (MDNS.begin(HOSTNAME)) MDNS.addService("http", "tcp", 80);
-        server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+        server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+            AsyncWebServerResponse *response =
+                request->beginResponse(200, "text/html", INDEX_HTML_GZ, sizeof(INDEX_HTML_GZ));
+            response->addHeader("Content-Encoding", "gzip");
+            response->addHeader("Cache-Control", "no-cache");
+            request->send(response);
+        });
         server.onNotFound([](AsyncWebServerRequest *request) { request->send(404, "text/plain", "Not found"); });
     } else {
         startSetupPortal();
@@ -296,7 +314,9 @@ void begin(Eye &e) {
 
 void loop() {
     uint32_t now = millis();
-    showStatusLed(serverRunning && !setupMode && WiFi.status() == WL_CONNECTED);
+    bool online = serverRunning && !setupMode && WiFi.status() == WL_CONNECTED;
+    showStatusLed(online);
+    ota::loop(online);
     if (setupMode) dns.processNextRequest();
     if (restartAt && (int32_t)(now - restartAt) >= 0) ESP.restart();
     if (now - lastStatus >= STATUS_INTERVAL_MS) {

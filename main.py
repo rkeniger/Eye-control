@@ -35,6 +35,10 @@ class TeachMode(BaseModel):
     active: bool
 
 
+class AutoSwitch(BaseModel):
+    auto: bool
+
+
 class Aim(BaseModel):
     yaw: float
     pitch: float
@@ -42,6 +46,13 @@ class Aim(BaseModel):
 
 @app.get("/api/eye")
 def eye_state():
+    return eye.state()
+
+
+@app.post("/api/eye/auto")
+def eye_auto(body: AutoSwitch):
+    if not eye.set_auto(body.auto):
+        raise HTTPException(503, "The eye is not connected")
     return eye.state()
 
 

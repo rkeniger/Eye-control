@@ -148,6 +148,8 @@ class EyeController:
         self._new_target = False
         self._teach_until = 0.0
         self._teach_gaze = (0.0, 0.0)
+        self._pending_auto: bool | None = None  # Auto switch change to send to the eye
+        self._expect_mode: tuple[str, float] | None = None  # (mode, until): hide stale statuses meanwhile
 
     # ---- worker thread -----------------------------------------------------
 
@@ -186,6 +188,18 @@ class EyeController:
         with self._lock:
             self._teach_until = time.monotonic() + TEACH_TIMEOUT
             self._teach_gaze = (yaw, pitch)
+
+    def set_auto(self, on: bool) -> bool:
+        """Flip the eye's saved Auto switch. Returns False if the eye isn't connected."""
+        if not self.connected:
+            return False
+        with self._lock:
+            self._pending_auto = on
+            mode = "auto" if on else "manual"
+            self._expect_mode = (mode, time.monotonic() + 1.0)
+            if self.eye_status:  # show it straight away; the eye's next status confirms it
+                self.eye_status = {**self.eye_status, "mode": mode}
+        return True
 
     def save_teach_point(self) -> str | None:
         """Pair the current target's anchor with the taught angles. Returns an error message or None."""
@@ -237,9 +251,14 @@ class EyeController:
 
     def _next_message(self, now: float, last_absent: float) -> dict | None:
         with self._lock:
+            if self._pending_auto is not None:
+                msg = {"auto": self._pending_auto}
+                self._pending_auto = None
+                return msg
             if self.teaching:
+                # Marked as teaching so the eye follows it even with Auto off.
                 yaw, pitch = self._teach_gaze
-                return {"yaw": round(yaw, 1), "pitch": round(pitch, 1)}
+                return {"yaw": round(yaw, 1), "pitch": round(pitch, 1), "teach": True}
             if self._gaze is not None:
                 msg = {"yaw": round(self._gaze[0], 1), "pitch": round(self._gaze[1], 1)}
                 if self._new_target:
@@ -258,7 +277,14 @@ class EyeController:
             except ValueError:
                 continue
             if msg.get("type") == "status":
-                self.eye_status = msg
+                with self._lock:
+                    if self._expect_mode:
+                        mode, until = self._expect_mode
+                        if msg.get("mode") == mode or time.monotonic() > until:
+                            self._expect_mode = None
+                        else:
+                            msg["mode"] = mode  # sent before the switch reached the eye
+                    self.eye_status = msg
 
     async def run(self):
         if not self.enabled:
