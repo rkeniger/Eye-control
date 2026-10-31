@@ -11,11 +11,13 @@ from pydantic import BaseModel
 from eye import EyeController
 from pipeline import Pipeline
 from settings import settings
+from zone import Zone
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 eye = EyeController(settings.eye_url, settings.calibration_path, settings.eye_send_hz)
-pipeline = Pipeline(settings, on_people=eye.on_people)
+zone = Zone(settings.zone_path)
+pipeline = Pipeline(settings, zone, on_people=eye.on_people)
 
 
 @asynccontextmanager
@@ -44,6 +46,10 @@ class Aim(BaseModel):
     pitch: float
 
 
+class ZoneBody(BaseModel):
+    points: list[tuple[float, float]]
+
+
 @app.get("/api/eye")
 def eye_state():
     return eye.state()
@@ -54,6 +60,17 @@ def eye_auto(body: AutoSwitch):
     if not eye.set_auto(body.auto):
         raise HTTPException(503, "The eye is not connected")
     return eye.state()
+
+
+@app.get("/api/zone")
+def get_zone():
+    return {"points": zone.points}
+
+
+@app.put("/api/zone")
+def put_zone(body: ZoneBody):
+    zone.set([list(p) for p in body.points])
+    return {"points": zone.points}
 
 
 @app.post("/api/teach")

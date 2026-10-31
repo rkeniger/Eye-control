@@ -19,6 +19,8 @@ class Settings:
     eye_url: str = os.getenv("EYE_URL", "http://eyeball.local")
     eye_send_hz: float = float(os.getenv("EYE_SEND_HZ", "15"))
     calibration_path: str = os.getenv("CALIBRATION_PATH", "calibration.json")
+    # polygon outside which people are ignored, drawn on the page
+    zone_path: str = os.getenv("ZONE_PATH", "zone.json")
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
 

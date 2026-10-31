@@ -3,7 +3,8 @@
 Threads:
   reader  pulls frames from RTSP, keeping only the newest one (no backlog = no lag build-up)
   worker  runs detection/tracking on the newest frame, hands people to `on_people`,
-          and (only while viewers are subscribed) encodes and publishes a preview
+          and (only while viewers are subscribed) encodes and publishes a preview.
+          People standing outside the zone are dropped before `on_people` and sent to viewers as `ignored`.
 
 The pipeline runs continuously from start() so downstream consumers (the eye) always get detections.
 """
@@ -26,6 +27,7 @@ import torch  # noqa: E402
 from ultralytics import YOLO  # noqa: E402
 
 from settings import Settings  # noqa: E402
+from zone import Zone  # noqa: E402
 
 log = logging.getLogger("pipeline")
 
@@ -61,10 +63,13 @@ class Session:
 
 
 class Pipeline:
-    def __init__(self, settings: Settings, on_people: Callable[[list[dict], float], dict] | None = None):
+    def __init__(
+        self, settings: Settings, zone: Zone, on_people: Callable[[list[dict], float], dict] | None = None
+    ):
         """`on_people(people, captured_at)` is called from the worker thread for every processed frame;
         the dict it returns is merged into the frame metadata sent to viewers."""
         self.settings = settings
+        self.zone = zone
         self.on_people = on_people
         self.device = "mps" if torch.backends.mps.is_available() else "cpu"
         self._model: YOLO | None = None
@@ -200,6 +205,8 @@ class Pipeline:
                         {"id": track_id, "conf": round(conf, 3), "box": [round(v, 4) for v in xyxyn]}
                     )
 
+            people, ignored = self.zone.split(people)
+
             extra = {}
             if self.on_people:
                 try:
@@ -218,13 +225,15 @@ class Pipeline:
             last_done = now
 
             if self._subscribers:
-                self._publish_frame(frame, people, extra, fps, captured_at)
+                self._publish_frame(frame, people, ignored, extra, fps, captured_at)
 
             if s.max_fps > 0:
                 session.stop.wait(max(0.0, 1.0 / s.max_fps - (time.time() - started)))
         log.info("Worker stopped")
 
-    def _publish_frame(self, frame, people: list[dict], extra: dict, fps: float, captured_at: float):
+    def _publish_frame(
+        self, frame, people: list[dict], ignored: list[dict], extra: dict, fps: float, captured_at: float
+    ):
         s = self.settings
         h, w = frame.shape[:2]
         if w > s.preview_width:
@@ -239,6 +248,7 @@ class Pipeline:
             {
                 "type": "frame",
                 "people": people,
+                "ignored": ignored,
                 "fps": round(fps, 1),
                 "lag_ms": round((time.time() - captured_at) * 1000),
                 **extra,

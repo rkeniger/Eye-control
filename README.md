@@ -10,17 +10,20 @@ uv run main.py
 
 Open http://localhost:8000 (or `http://<this-mac>:8000` from another device on the LAN). There is no authentication.
 
+**Detection zone:** click **Edit zone** and draw a polygon on the picture: click to add corners (once there are 3, a click is inserted into the nearest edge), drag a corner to move it, and double-click or right-click a corner to remove it. Save. People whose feet (the bottom centre of their box) are outside it are ignored: they aren't counted, the eye won't look at them, and the page shows them as faint dashed boxes. The zone is saved to `zone.json`. Clear it to use the whole picture again.
+
 Detection runs continuously while the server is up. Preview frames are only encoded and sent while a page is open. If the stream drops, it reconnects with backoff (1 → 10 s) and the page shows a banner.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and adjust. Key settings: `RTSP_URL`, `MODEL`, `IMGSZ` (inference size), `CONF`, `PREVIEW_WIDTH`, `MAX_FPS`, `PORT`, `EYE_URL` (empty disables the eye), `CALIBRATION_PATH`.
+Copy `.env.example` to `.env` and adjust. Key settings: `RTSP_URL`, `MODEL`, `IMGSZ` (inference size), `CONF`, `PREVIEW_WIDTH`, `MAX_FPS`, `PORT`, `EYE_URL` (empty disables the eye), `CALIBRATION_PATH`, `ZONE_PATH`.
 
 Each preview frame is roughly 300 KB at 1280 px wide, so at 15 fps that's about 35 Mbit/s per viewer. Lower `PREVIEW_WIDTH` or `MAX_FPS` for viewers on Wi-Fi.
 
 ## How it works
 
 - `pipeline.py`: a reader thread keeps only the newest RTSP frame. A worker thread runs `model.track` (people only), downscales and JPEG-encodes the frame, and publishes one binary WebSocket message per frame: `[uint32 LE meta length][meta JSON][JPEG]`. Box coordinates are normalised to 0–1.
+- `zone.py`: the detection zone. People are split into inside/outside before the eye sees them; the outside ones are sent to the page as `ignored`.
 - `main.py`: FastAPI. `/ws` streams to each viewer through a 2-slot queue that drops old frames for slow clients. `static/` serves the page.
 - `static/index.html`: draws each frame and its own boxes together on a canvas, so the boxes always line up with the image.
 

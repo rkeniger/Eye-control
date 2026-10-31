@@ -7,3 +7,4 @@ runs/
 .pio/
 .vscode/
 calibration.json
+zone.json
